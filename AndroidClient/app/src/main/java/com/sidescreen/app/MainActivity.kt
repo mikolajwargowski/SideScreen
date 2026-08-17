@@ -37,6 +37,7 @@ import com.google.android.material.slider.Slider
 import com.google.android.material.switchmaterial.SwitchMaterial
 import com.sidescreen.app.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -386,8 +387,17 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
+            // The readiness probe opens a short-lived socket because the server has no
+            // dedicated health endpoint. Stop it and let any in-flight read finish before
+            // opening the real stream; otherwise the single-client Mac server can briefly
+            // accept the probe and reject/reset this connection.
+            stopChecklistUpdates()
+            binding.connectButton.isEnabled = false
             updateStatus("Connecting...")
-            connect(host, port)
+            lifecycleScope.launch {
+                delay(300)
+                connect(host, port)
+            }
         }
 
         binding.disconnectButton.setOnClickListener {
