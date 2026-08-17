@@ -337,7 +337,7 @@ class ScreenCapture {
         config.width = width
         config.height = height
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
-        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.showsCursor = true
         config.queueDepth = 4
         config.capturesAudio = false
@@ -463,7 +463,12 @@ class ScreenCapture {
         stopFrameMonitor()
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
-        timer.schedule(deadline: .now() + 3.0, repeating: 3.0)
+        // ScreenCaptureKit may stop producing frames for a completely static
+        // display. Keep the encoder/transport/decoder warm with a cheap cached
+        // frame instead of letting the whole pipeline sleep for ~6 seconds.
+        // Preserve the original startup grace period; only the steady-state
+        // idle check needs to be frequent.
+        timer.schedule(deadline: .now() + 3.0, repeating: 0.5)
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
 
@@ -477,13 +482,10 @@ class ScreenCapture {
             let lastTime = self.stateLock.withLock { $0.lastFrameTime }
             if let last = lastTime {
                 let elapsed = Double(DispatchTime.now().uptimeNanoseconds - last.uptimeNanoseconds) / 1_000_000_000
-                stalled = elapsed > 5.0
-                if stalled {
-                    debugLog("Frame flow stalled — no frames for \(String(format: "%.1f", elapsed))s, triggering fallback")
-                }
+                stalled = elapsed > 0.75
             } else {
                 stalled = true
-                debugLog("Frame flow stalled — no frames ever received after 5s, triggering fallback")
+                debugLog("Frame flow stalled — no first frame received during startup grace period")
             }
 
             if stalled {
@@ -502,6 +504,7 @@ class ScreenCapture {
                     self.stateLock.withLock { $0.lastFrameTime = DispatchTime.now() }
                     // Keep monitoring — real errors are handled by the SCStream error delegate
                 } else {
+                    debugLog("Frame flow stalled before first frame — attempting recovery")
                     self.stopFrameMonitor()
                     if !self.restartAttempted {
                         debugLog("Attempting SCStream restart...")
@@ -600,7 +603,7 @@ class ScreenCapture {
     /// stopStreaming.
     private func createDisplaySleepAssertion() {
         guard !hasDisplaySleepAssertion else { return }
-        let reason = "Side Screen is streaming to an external tablet display" as CFString
+        let reason = "SideScreen Flow is streaming to an external tablet display" as CFString
         let result = IOPMAssertionCreateWithName(
             kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
             IOPMAssertionLevel(kIOPMAssertionLevelOn),
@@ -659,7 +662,7 @@ class ScreenCapture {
 
         debugLog("CGDisplayStream fallback — display \(displayID) (\(width)x\(height))")
 
-        let pixelFormat = Int32(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+        let pixelFormat = Int32(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
         let queue = DispatchQueue(label: "com.sidescreen.cgdisplaystream", qos: .userInteractive)
 
         // Without kCGDisplayStreamShowCursor the fallback stream never
