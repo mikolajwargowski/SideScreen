@@ -3,7 +3,9 @@
 > Data discovery: 2026-08-07
 > Baza: `tranvuongquocdat/SideScreen`, commit `a651a81b7d6468c7a564c038551872d3346a2d55`
 > Docelowy sprzęt: Mac mini M4 + Samsung Galaxy Tab S8+
-> Status rekomendacji: **warunkowe GO** — implementacja jest realna, ale przed pełnym zakresem trzeba zamknąć dwa eksperymenty: kompatybilność syntetycznych eventów pena z aplikacjami oraz rzeczywisty pipeline 120 Hz na S8+.
+> Status rekomendacji: **MVP technicznie potwierdzone** — 2026-08-07 SideScreen Flow przesłał pełny nacisk S Pena do Excalidraw, a realny panel i wirtualny display pracowały w trybie 120 Hz. Do zamknięcia pozostają testy akceptacyjne Direct Touch/palm rejection, szersza macierz aplikacji oraz stabilność frame pacing przy 120 fps.
+
+> Uwaga aktualizacyjna: tabela środowiska poniżej opisuje stan na początku discovery. Xcode 26.6, JDK 17, Android SDK 34, ADB i Galaxy Tab S8+ zostały następnie przygotowane i zweryfikowane. Aktualne pomiary oraz wyniki buildów znajdują się w `HARDWARE_BASELINE_GALAXY_TAB_S8_PLUS.md`, a stan implementacji w `PEN_DIRECT_TOUCH_ROADMAP.md`.
 
 ## 1. Cel produktu
 

@@ -32,10 +32,26 @@ cd AndroidClient
 ./gradlew --no-daemon testDebugUnitTest assembleDebug
 ```
 
-Verified results:
+Verified baseline results:
 
 - macOS: 35 tests passed, 0 failed; universal app and DMG built successfully
 - Android: 12 tests passed, 0 failed; debug APK built successfully
+
+Verified SideScreen Flow MVP results after Pen V1 implementation:
+
+- macOS: 41 tests passed, 0 failed; universal app and DMG built successfully;
+- Android: unit tests and debug APK build passed with JDK 17;
+- Pen V1 capability negotiation was acknowledged by the host;
+- Excalidraw rendered visibly pressure-dependent S Pen strokes;
+- observed normalized pressure during the compatibility run ranged from about 0.046 to 0.988;
+- hover/proximity, contact transitions and the primary S Pen button (`buttons=32`) reached the host;
+- moving-content host telemetry typically reached about 99-111 fps with 0 dropped frames in sampled windows and about 6-8 ms average frame age.
+- the accepted Retina profile uses a `1400x876` logical desktop with a native `2800x1752` HEVC stream at 120 Hz;
+- the browser Pen Probe observed changing `tiltX` and `tiltY`, while Chromium classified the synthetic pointer as `mouse`;
+- directional checks found and corrected both the initial 90-degree conversion error and a remaining CoreGraphics X-axis sign inversion; Android stylus orientation is measured clockwise from screen-up (`0=up`, `-pi/2=left`, `pi/2=right`), while injected macOS X tilt needs the opposite sign;
+- `AXIS_ORIENTATION` is stylus azimuth, not barrel rotation, so it is no longer forwarded as a false `twist` value;
+- direct finger input, two-finger pinch and pressure-sensitive Excalidraw strokes passed interactive testing;
+- sampled finger contacts were commonly about 4-17 touch-major units, while broad palm-like contacts reached about 24-30, leaving a possible device-specific rejection threshold near 22 for later calibration.
 
 ## Display and stream evidence
 
@@ -83,11 +99,11 @@ The Samsung input dump did not report an active palm-rejection implementation fo
 
 The tablet contained SideScreen 0.9.1 signed by a different Android debug certificate than both the official 0.11.1 release asset and this machine's local debug build. Android correctly rejected an in-place update.
 
-No existing application data was deleted. The fork's debug build now uses `com.sidescreen.app.dev` and is labeled `Side Screen Dev`, so it can coexist with the old baseline client. Release builds retain the upstream identifier until distribution and product naming are decided.
+No existing application data was deleted. The fork's debug build now uses `com.sidescreen.app.dev` and is labeled `SideScreen Flow Dev`, so it can coexist with the old baseline client. Release builds retain the upstream identifier while the user-facing product name is SideScreen Flow.
 
 ## Remaining gates
 
 1. Record controlled 60/90/120 Hz motion traces and end-to-end latency.
-2. Implement a negotiated, versioned Pen V1 packet and shared golden-vector tests.
-3. Verify hover, pressure, tilt and button semantics in an AppKit probe and browser Pointer Events.
-4. Run the compatibility matrix in FigJam/Figma, tldraw/Excalidraw and at least one native macOS drawing application.
+2. Finish interactive acceptance for Direct Touch, two-finger gestures and palm rejection.
+3. Verify tilt and button behavior in an AppKit probe and generic browser Pointer Events.
+4. Extend the compatibility matrix beyond the verified Excalidraw pressure path to FigJam/Figma and at least one native macOS drawing application.
