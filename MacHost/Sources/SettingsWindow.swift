@@ -1,6 +1,30 @@
 import Cocoa
 import SwiftUI
 
+enum PenButtonAction: String, CaseIterable, Identifiable {
+    case panCanvas
+    case rightClick
+    case native
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .panCanvas: "Pan"
+        case .rightClick: "Right Click"
+        case .native: "Native"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .panCanvas: "Hold the S Pen button to emulate a middle-button canvas pan"
+        case .rightClick: "Press and release the S Pen button for a context click"
+        case .native: "Forward tablet button metadata without mouse-button mapping"
+        }
+    }
+}
+
 // MARK: - Frosted GroupBox Component
 
 struct FrostedGroupBox<Content: View, Trailing: View>: View {
@@ -116,7 +140,7 @@ struct SettingsView: View {
                     .onHover { headerHovered = $0 }
 
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Side Screen")
+                        Text("SideScreen Flow")
                             .font(.system(size: 20, weight: .bold, design: .rounded))
                         Text("Turn your tablet into a second display")
                             .font(.system(size: 12, weight: .medium))
@@ -140,7 +164,7 @@ struct SettingsView: View {
                         Button("Cancel", role: .cancel) { }
                         Button("Reset", role: .destructive) {
                             settings.resetToDefaults()
-                            if let window = NSApp.windows.first(where: { $0.title == "Side Screen" }) {
+                            if let window = NSApp.windows.first(where: { $0.title == "SideScreen Flow" }) {
                                 window.center()
                             }
                         }
@@ -466,6 +490,28 @@ struct SettingsView: View {
                                     Text("Touch input is disabled — tablet is display-only")
                                         .font(.system(size: 10))
                                         .foregroundColor(.orange)
+                                } else {
+                                    Toggle("Direct Touch", isOn: $settings.directTouchEnabled)
+                                        .font(.system(size: 11, weight: .medium))
+                                    Text(settings.directTouchEnabled
+                                         ? "One finger presses and drags directly; use two fingers to scroll or zoom"
+                                         : "Legacy mode: one-finger movement scrolls; long-press drags")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+
+                                    Divider()
+                                    Text("S Pen Button")
+                                        .font(.system(size: 11, weight: .medium))
+                                    Picker("", selection: $settings.penButtonAction) {
+                                        ForEach(PenButtonAction.allCases) { action in
+                                            Text(action.title).tag(action)
+                                        }
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .labelsHidden()
+                                    Text(settings.penButtonAction.help)
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
                                 }
                             }
                         }
@@ -514,7 +560,7 @@ struct SettingsView: View {
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text("Launch at Login")
                                                 .font(.system(size: 12, weight: .medium))
-                                            Text("Run SideScreen in the background automatically after you log in.")
+                                            Text("Run SideScreen Flow in the background automatically after you log in.")
                                                 .font(.system(size: 10))
                                                 .foregroundColor(.secondary)
                                         }
@@ -947,7 +993,7 @@ struct SettingsView: View {
                                 }
                         }
                         .buttonStyle(.plain)
-                        .help("Quit Side Screen (⌘Q)")
+                        .help("Quit SideScreen Flow (⌘Q)")
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 14)
@@ -1184,6 +1230,12 @@ class DisplaySettings: ObservableObject {
     @Published var touchEnabled: Bool {
         didSet { save("touchEnabled", touchEnabled) }
     }
+    @Published var directTouchEnabled: Bool {
+        didSet { save("directTouchEnabled", directTouchEnabled) }
+    }
+    @Published var penButtonAction: PenButtonAction {
+        didSet { save("penButtonAction", penButtonAction.rawValue) }
+    }
     @Published var connectionMode: ConnectionMode {
         didSet { save("connectionMode", connectionMode.rawValue) }
     }
@@ -1231,6 +1283,9 @@ class DisplaySettings: ObservableObject {
         self.customWidth = defaults.object(forKey: keyPrefix + "customWidth") as? Int ?? 1920
         self.customHeight = defaults.object(forKey: keyPrefix + "customHeight") as? Int ?? 1200
         self.touchEnabled = defaults.object(forKey: keyPrefix + "touchEnabled") as? Bool ?? true
+        self.directTouchEnabled = defaults.object(forKey: keyPrefix + "directTouchEnabled") as? Bool ?? true
+        let penButtonRaw = defaults.string(forKey: keyPrefix + "penButtonAction") ?? PenButtonAction.panCanvas.rawValue
+        self.penButtonAction = PenButtonAction(rawValue: penButtonRaw) ?? .panCanvas
         let modeRaw = defaults.string(forKey: keyPrefix + "connectionMode") ?? ConnectionMode.usb.rawValue
         self.connectionMode = ConnectionMode(rawValue: modeRaw) ?? .usb
         self.autoStartStreamingOnLaunch = defaults.object(forKey: keyPrefix + "autoStartStreamingOnLaunch") as? Bool ?? false
@@ -1299,7 +1354,8 @@ class DisplaySettings: ObservableObject {
     func resetToDefaults() {
         let keys = ["resolution", "refreshRate", "hiDPI", "bitrate", "quality",
                     "gamingBoost", "port", "rotation", "flipHorizontal", "flipVertical", "showAllResolutions",
-                    "customWidth", "customHeight", "touchEnabled", "autoStartStreamingOnLaunch", "startupMode"]
+                    "customWidth", "customHeight", "touchEnabled", "directTouchEnabled", "penButtonAction",
+                    "autoStartStreamingOnLaunch", "startupMode"]
         for key in keys {
             defaults.removeObject(forKey: keyPrefix + key)
         }
@@ -1318,6 +1374,8 @@ class DisplaySettings: ObservableObject {
         customWidth = 1920
         customHeight = 1200
         touchEnabled = true
+        directTouchEnabled = true
+        penButtonAction = .panCanvas
         autoStartStreamingOnLaunch = false
         startupMode = .usb
 
@@ -1356,7 +1414,7 @@ class SettingsWindowController: NSWindowController, NSWindowDelegate {
             defer: false
         )
 
-        window.title = "Side Screen"
+        window.title = "SideScreen Flow"
         window.titlebarAppearsTransparent = true
         window.backgroundColor = .windowBackgroundColor
         window.isMovableByWindowBackground = true
@@ -1464,7 +1522,7 @@ struct WirelessSection: View {
                     } else {
                         Text("Generating QR…").foregroundColor(.secondary)
                     }
-                    Text("Scan this QR from Side Screen Android (Wireless tab)")
+                    Text("Scan this QR from SideScreen Flow Android (Wireless tab)")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)

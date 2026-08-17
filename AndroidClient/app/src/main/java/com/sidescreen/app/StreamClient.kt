@@ -27,6 +27,7 @@ class StreamClient(
     private var inputStream: DataInputStream? = null
     private var outputStream: java.io.DataOutputStream? = null
     private var isConnected = false
+    private var penSequence = 0L
 
     // Callback includes actual frame size (may differ from buffer.size due to pooling),
     // receive timestamp, and whether the frame can restart HEVC decoding.
@@ -44,6 +45,10 @@ class StreamClient(
 
     /** True once a MESSAGE_CODEC_SELECTED arrived — distinguishes new Macs from old. */
     @Volatile var codecNegotiated = false
+        private set
+
+    /** True only after a new host acknowledges the payload-free Pen V1 capability. */
+    @Volatile var penProtocolV1Negotiated = false
         private set
 
     private var bytesReceived = 0L
@@ -126,8 +131,11 @@ class StreamClient(
                 outputStream = java.io.DataOutputStream(socket?.getOutputStream())
                 streamCodecIsHevc = true
                 codecNegotiated = false
+                penProtocolV1Negotiated = false
+                penSequence = 0L
                 advertiseAvcOnlyIfNeeded() // MUST precede type 8: type 8 can trigger the server's early protocol finish
                 advertiseDecoderLimits() // Also before type 8, for the same reason
+                advertisePenProtocolV1()
                 advertiseFrameMetadataSupport()
                 isConnected = true
                 lastKeyframeReceivedNs = 0L
@@ -255,8 +263,11 @@ class StreamClient(
                 outputStream = java.io.DataOutputStream(s.getOutputStream())
                 streamCodecIsHevc = true
                 codecNegotiated = false
+                penProtocolV1Negotiated = false
+                penSequence = 0L
                 advertiseAvcOnlyIfNeeded() // MUST precede type 8: type 8 can trigger the server's early protocol finish
                 advertiseDecoderLimits() // Also before type 8, for the same reason
+                advertisePenProtocolV1()
                 advertiseFrameMetadataSupport()
                 isConnected = true
                 diagLog("Wireless connected to $host:$port")
@@ -285,6 +296,14 @@ class StreamClient(
             out.writeByte(MESSAGE_CLIENT_SUPPORTS_FRAME_METADATA)
             out.flush()
             diagLog("Advertised frame metadata support")
+        }
+    }
+
+    private fun advertisePenProtocolV1() {
+        outputStream?.let { out ->
+            out.writeByte(PenProtocol.MESSAGE_CLIENT_CAPABILITIES_V1)
+            out.flush()
+            diagLog("Advertised Pen V1 capability")
         }
     }
 
@@ -361,6 +380,11 @@ class StreamClient(
                             onCodecSelected?.invoke(streamCodecIsHevc)
                         }
 
+                        PenProtocol.MESSAGE_SERVER_CAPABILITIES_V1 -> {
+                            penProtocolV1Negotiated = true
+                            diagLog("Host acknowledged Pen V1")
+                        }
+
                         else -> {
                             Log.e(
                                 TAG,
@@ -410,6 +434,34 @@ class StreamClient(
             } catch (_: Exception) {
             }
         }
+    }
+
+    internal fun sendPenSamples(samples: List<PenSample>) {
+        if (!isConnected || !penProtocolV1Negotiated || samples.isEmpty()) return
+        val packet =
+            try {
+                PenProtocol.encode(nextPenSequence(), samples)
+            } catch (error: IllegalArgumentException) {
+                Log.w(TAG, "Rejected invalid Pen V1 sample batch", error)
+                return
+            }
+
+        touchScope.launch {
+            try {
+                outputStream?.let { out ->
+                    out.write(packet)
+                    out.flush()
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    @Synchronized
+    private fun nextPenSequence(): Long {
+        val value = penSequence
+        penSequence = (penSequence + 1L) and 0xFFFF_FFFFL
+        return value
     }
 
     // Callback for latency measurement (round-trip ping/pong)

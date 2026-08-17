@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SideScreen Flow Pen Probe</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; overflow: hidden; background: #090b10; color: #f5f7ff; }
+    #canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; touch-action: none; cursor: crosshair; }
+    .panel { position: fixed; top: 18px; left: 18px; width: 360px; padding: 16px; border: 1px solid #ffffff22; border-radius: 16px; background: #11141dea; backdrop-filter: blur(18px); box-shadow: 0 18px 60px #0008; }
+    h1 { margin: 0 0 4px; font-size: 19px; }
+    .sub { margin-bottom: 14px; color: #aab2c8; font-size: 12px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .metric { padding: 9px 10px; border-radius: 10px; background: #ffffff09; }
+    .label { color: #8992aa; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+    .value { margin-top: 3px; font: 600 16px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .wide { grid-column: 1 / -1; }
+    .buttons { display: flex; gap: 8px; margin-top: 12px; }
+    button { padding: 8px 12px; color: white; border: 1px solid #ffffff25; border-radius: 9px; background: #ffffff0d; }
+    #status { margin-top: 12px; color: #8ee8ad; font-size: 12px; }
+    #tilt { position: fixed; right: 28px; top: 28px; width: 150px; height: 150px; border: 1px solid #ffffff25; border-radius: 50%; background: #11141dcc; }
+    #tiltDot { position: absolute; left: 69px; top: 69px; width: 12px; height: 12px; margin: -6px; border-radius: 50%; background: #8b6cff; box-shadow: 0 0 24px #8b6cff; }
+    #tiltLabel { position: absolute; width: 100%; top: 57px; text-align: center; color: #8992aa; font-size: 11px; }
+    .direction { position: absolute; color: #69738c; font: 10px ui-monospace, monospace; }
+    .up { top: 5px; left: 69px; } .down { bottom: 5px; left: 69px; }
+    .left { left: 5px; top: 68px; } .right { right: 5px; top: 68px; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <section class="panel">
+    <h1>SideScreen Flow · Pen Probe</h1>
+    <div class="sub">Hover, draw with changing pressure, tilt the pen, then press its side button.</div>
+    <div class="grid">
+      <div class="metric"><div class="label">Pointer type</div><div class="value" id="pointerType">—</div></div>
+      <div class="metric"><div class="label">Event</div><div class="value" id="eventType">—</div></div>
+      <div class="metric"><div class="label">Pressure</div><div class="value" id="pressure">0.000</div></div>
+      <div class="metric"><div class="label">Buttons</div><div class="value" id="buttons">0</div></div>
+      <div class="metric"><div class="label">Tilt X</div><div class="value" id="tiltX">0°</div></div>
+      <div class="metric"><div class="label">Tilt Y</div><div class="value" id="tiltY">0°</div></div>
+      <div class="metric"><div class="label">Barrel twist</div><div class="value">unsupported</div></div>
+      <div class="metric"><div class="label">Samples</div><div class="value" id="samples">0</div></div>
+      <div class="metric wide"><div class="label">Interaction mode</div><div class="value" id="mode">hover</div></div>
+      <div class="metric wide"><div class="label">Last side-button observation</div><div class="value" id="buttonSeen">none</div></div>
+    </div>
+    <div class="buttons"><button id="clear">Clear canvas</button><button id="reset">Reset counters</button></div>
+    <div id="status">Waiting for pointer input…</div>
+  </section>
+  <div id="tilt">
+    <span class="direction up">U</span><span class="direction down">D</span>
+    <span class="direction left">L</span><span class="direction right">R</span>
+    <div id="tiltLabel">tilt vector<br>dot follows pen lean</div><div id="tiltDot"></div>
+  </div>
+  <script>
+    const canvas = document.querySelector('#canvas');
+    const ctx = canvas.getContext('2d');
+    const out = Object.fromEntries(['pointerType','eventType','pressure','buttons','tiltX','tiltY','samples','buttonSeen','mode','status','tiltDot'].map(id => [id, document.querySelector('#' + id)]));
+    let drawing = false, panning = false, last = null, samples = 0;
+    let panX = 0, panY = 0;
+    const strokes = [];
+
+    function render() {
+      ctx.clearRect(0, 0, innerWidth, innerHeight);
+      ctx.save();
+      ctx.translate(panX, panY);
+      for (const stroke of strokes) {
+        ctx.beginPath(); ctx.moveTo(stroke.x1, stroke.y1); ctx.lineTo(stroke.x2, stroke.y2);
+        ctx.lineWidth = stroke.width; ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function resize() {
+      const ratio = devicePixelRatio || 1;
+      canvas.width = Math.round(innerWidth * ratio); canvas.height = Math.round(innerHeight * ratio);
+      canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#8b6cff';
+      render();
+    }
+
+    function update(e) {
+      samples += 1;
+      out.pointerType.textContent = e.pointerType || 'unknown';
+      out.eventType.textContent = e.type;
+      out.pressure.textContent = Number(e.pressure || 0).toFixed(3);
+      out.buttons.textContent = `${e.buttons} (0b${Number(e.buttons).toString(2)})`;
+      out.tiltX.textContent = `${e.tiltX || 0}°`;
+      out.tiltY.textContent = `${e.tiltY || 0}°`;
+      out.samples.textContent = samples.toLocaleString();
+      out.status.textContent = `x ${Math.round(e.clientX)} · y ${Math.round(e.clientY)} · primary ${e.isPrimary}`;
+      if (e.buttons > 1) out.buttonSeen.textContent = `${e.type}: ${e.buttons} (0b${Number(e.buttons).toString(2)})`;
+      const tx = Math.max(-60, Math.min(60, e.tiltX || 0));
+      const ty = Math.max(-60, Math.min(60, e.tiltY || 0));
+      out.tiltDot.style.transform = `translate(${tx}px, ${ty}px)`;
+    }
+
+    function point(e) { return { x: e.clientX, y: e.clientY, pressure: e.pressure || 0.01 }; }
+    canvas.addEventListener('pointerdown', e => {
+      update(e);
+      canvas.setPointerCapture(e.pointerId);
+      last = point(e);
+      if (e.button === 1 || (e.buttons & 4) !== 0) {
+        panning = true; drawing = false; out.mode.textContent = 'pan canvas';
+      } else if (e.button === 0) {
+        drawing = true; panning = false; out.mode.textContent = 'draw';
+      }
+    });
+    canvas.addEventListener('pointermove', e => {
+      update(e);
+      if (panning && last) {
+        const next = point(e);
+        panX += next.x - last.x; panY += next.y - last.y; last = next;
+        render();
+        return;
+      }
+      if (!drawing) return;
+      const next = point(e);
+      strokes.push({
+        x1: last.x - panX, y1: last.y - panY,
+        x2: next.x - panX, y2: next.y - panY,
+        width: 1 + next.pressure * 20
+      });
+      last = next; render();
+    });
+    for (const type of ['pointerup','pointercancel','pointerout','pointerover','pointerenter','pointerleave']) {
+      canvas.addEventListener(type, e => { update(e); if (type === 'pointerup' || type === 'pointercancel') { drawing = false; panning = false; last = null; out.mode.textContent = 'hover'; } });
+    }
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    document.querySelector('#clear').onclick = () => { strokes.length = 0; panX = 0; panY = 0; render(); };
+    document.querySelector('#reset').onclick = () => { samples = 0; out.samples.textContent = '0'; out.buttonSeen.textContent = 'none'; };
+    addEventListener('resize', resize); resize();
+  </script>
+</body>
+</html>
