@@ -17,14 +17,14 @@ android {
         targetSdk = 34
         versionCode = computedVersionCode
         versionName = appVersion
-        manifestPlaceholders["appLabel"] = "Side Screen"
+        manifestPlaceholders["appLabel"] = "SideScreen Flow"
     }
 
     buildTypes {
         debug {
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
-            manifestPlaceholders["appLabel"] = "Side Screen Dev"
+            manifestPlaceholders["appLabel"] = "SideScreen Flow Dev"
         }
         release {
             isMinifyEnabled = false

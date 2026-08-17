@@ -3,11 +3,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/app_identity.sh"
 VERSION=$(cat "$ROOT_DIR/VERSION" | tr -d '[:space:]')
-APP_DIR="$ROOT_DIR/SideScreen.app"
+APP_DIR="$ROOT_DIR/$MAC_APP_BUNDLE_NAME"
 
 echo "======================================="
-echo "  Side Screen - Dev Test (v$VERSION)"
+echo "  $MAC_APP_PRODUCT_NAME - Dev Test (v$VERSION)"
 echo "======================================="
 echo ""
 
@@ -33,13 +34,13 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>SideScreen</string>
+    <string>$MAC_APP_EXECUTABLE</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.sidescreen.app</string>
+    <string>$MAC_APP_BUNDLE_ID</string>
     <key>CFBundleName</key>
-    <string>Side Screen</string>
+    <string>$MAC_APP_PRODUCT_NAME</string>
     <key>CFBundleVersion</key>
     <string>$VERSION</string>
     <key>CFBundleShortVersionString</key>
@@ -53,12 +54,16 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Side Screen needs screen recording access to capture your virtual display.</string>
+    <string>SideScreen Flow needs screen recording access to capture your virtual display.</string>
 </dict>
 </plist>
 EOF
 
-codesign --force --deep --sign - --entitlements "$ROOT_DIR/MacHost/SideScreen.entitlements" "$APP_DIR" 2>/dev/null
+codesign --force --deep --sign - \
+  --identifier "$MAC_APP_BUNDLE_ID" \
+  --requirements "=$MAC_APP_REQUIREMENT" \
+  --entitlements "$ROOT_DIR/MacHost/SideScreen.entitlements" \
+  "$APP_DIR" 2>/dev/null
 echo "  OK"
 
 # 3. Build Android
@@ -79,22 +84,22 @@ fi
 
 # 5. Run macOS app
 echo "[5/5] Starting macOS app..."
-pkill -f "SideScreen.app" 2>/dev/null || true
+pkill -x "$MAC_APP_EXECUTABLE" 2>/dev/null || true
 sleep 0.5
 
-adb reverse tcp:8888 tcp:8888 2>/dev/null || true
+adb reverse tcp:54321 tcp:54321 2>/dev/null || true
 open "$APP_DIR"
 
 echo ""
 echo "======================================="
 echo "  Ready to test!"
 echo "  App: $APP_DIR"
-echo "  Open Side Screen on your tablet"
+echo "  Open SideScreen Flow on your tablet"
 echo "======================================="
 echo ""
 read -p "Test result? [y=OK / n=failed]: " RESULT
 
-pkill -f "SideScreen.app" 2>/dev/null || true
+pkill -x "$MAC_APP_EXECUTABLE" 2>/dev/null || true
 
 if [ "$RESULT" = "y" ]; then
     echo ""

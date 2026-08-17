@@ -3,17 +3,18 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/app_identity.sh"
 
-echo "🚀 Starting Side Screen..."
+echo "🚀 Starting $MAC_APP_PRODUCT_NAME..."
 
 # Kill any existing instance
-pkill -f SideScreen 2>/dev/null || true
+pkill -x "$MAC_APP_EXECUTABLE" 2>/dev/null || true
 sleep 0.3
 
 # Check if app bundle exists
-if [ -d "$ROOT_DIR/SideScreen.app" ]; then
-    echo "  Opening SideScreen.app..."
-    open "$ROOT_DIR/SideScreen.app"
+if [ -d "$ROOT_DIR/$MAC_APP_BUNDLE_NAME" ]; then
+    echo "  Opening $MAC_APP_BUNDLE_NAME..."
+    open "$ROOT_DIR/$MAC_APP_BUNDLE_NAME"
 elif [ -f "$ROOT_DIR/MacHost/.build/release/SideScreen" ]; then
     echo "  Running release binary..."
     "$ROOT_DIR/MacHost/.build/release/SideScreen" &
@@ -24,8 +25,8 @@ else
     echo "❌ No build found. Building now..."
     "$SCRIPT_DIR/build_mac.sh"
     echo ""
-    echo "  Opening SideScreen.app..."
-    open "$ROOT_DIR/SideScreen.app"
+    echo "  Opening $MAC_APP_BUNDLE_NAME..."
+    open "$ROOT_DIR/$MAC_APP_BUNDLE_NAME"
 fi
 
 echo ""
@@ -35,12 +36,12 @@ echo ""
 # Setup USB if device connected
 if adb devices 2>/dev/null | grep -q "device$"; then
     echo "📱 Android device detected, setting up USB..."
-    adb reverse --remove tcp:8888 2>/dev/null || true
-    adb reverse tcp:8888 tcp:8888
+    adb reverse --remove tcp:54321 2>/dev/null || true
+    adb reverse tcp:54321 tcp:54321
     echo "  ✓ Port forwarding ready"
 fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Open 'Side Screen' on Android and tap Connect"
+echo "Open 'SideScreen Flow' on Android and tap Connect"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
