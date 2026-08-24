@@ -144,6 +144,10 @@ class VideoDecoder(
                 currentWidth,
                 currentHeight,
             )
+        // The macOS capture path sends NV12 video-range samples. Declare that
+        // explicitly so vendor decoders expand 16...235 consistently instead
+        // of occasionally treating the luma plane as full range (washed out).
+        format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
 
         var configured = false
 
@@ -171,6 +175,7 @@ class VideoDecoder(
                         currentWidth,
                         currentHeight,
                     )
+                basicFormat.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
                 basicFormat.setInteger(MediaFormat.KEY_PRIORITY, 0)
                 basicFormat.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
                 codec.configure(basicFormat, surface, null, 0)
@@ -192,6 +197,7 @@ class VideoDecoder(
                         currentWidth,
                         currentHeight,
                     )
+                minimalFormat.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
                 codec.configure(minimalFormat, surface, null, 0)
                 diagLog("Configured with minimal format")
             } catch (e: Exception) {

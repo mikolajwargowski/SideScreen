@@ -17,9 +17,15 @@ android {
         targetSdk = 34
         versionCode = computedVersionCode
         versionName = appVersion
+        manifestPlaceholders["appLabel"] = "SideScreen Flow"
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            manifestPlaceholders["appLabel"] = "SideScreen Flow Dev"
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("debug")

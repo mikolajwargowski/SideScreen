@@ -21,6 +21,11 @@ private enum WireMessage {
     /// #41). Every payload byte has the high bit set, so old hosts that
     /// consume unknown types byte-by-byte skip the payload harmlessly.
     static let clientDecoderLimits: UInt8 = 11
+    /// Payload-free, bidirectional opt-in/ack. The server only sends this to a
+    /// client that advertised the same capability first.
+    static let penCapabilitiesV1: UInt8 = 12
+    /// Length-prefixed Pen V1 frame. Never sent before capability ACK.
+    static let penEventV1: UInt8 = 13
 }
 
 private extension NWEndpoint {
@@ -51,6 +56,7 @@ class StreamingServer {
     var onCodecNegotiated: ((StreamCodec) -> Void)?
     // Touch callback: (x1, y1, action, pointerCount, x2, y2)
     var onTouchEvent: ((Float, Float, Int, Int, Float, Float) -> Void)?
+    var onPenEvent: ((PenPacket) -> Void)?
     var onStats: ((Double, Double) -> Void)?
     var onKeyframeRequested: ((Bool) -> Void)?
     // Whether host wants to receive touch events from client. Ping/pong is
@@ -82,6 +88,9 @@ class StreamingServer {
     private var waitingForSyncFrame = false
     private var clientSupportsFrameMetadata = false
     private var clientIsAvcOnly = false
+    private var clientSupportsPenV1 = false
+    private var penV1Acknowledged = false
+    private var lastPenSequence: UInt32?
     /// Max decode size reported by the connected client (issue #41).
     private(set) var clientDecodeLimits: (width: Int, height: Int)?
     private var inputBuffer = Data()
@@ -136,6 +145,9 @@ class StreamingServer {
         connectionReady = false
         clientSupportsFrameMetadata = false
         clientIsAvcOnly = false
+        clientSupportsPenV1 = false
+        penV1Acknowledged = false
+        lastPenSequence = nil
         clientDecodeLimits = nil
         waitingForSyncFrame = true
         inputBuffer.removeAll(keepingCapacity: true)
@@ -437,11 +449,66 @@ class StreamingServer {
                     debugLog("Client decoder limit: \(w)x\(h)")
                 }
 
+            case WireMessage.penCapabilitiesV1:
+                consumeInputBytes(1)
+                if !clientSupportsPenV1 {
+                    clientSupportsPenV1 = true
+                    acknowledgePenV1(on: connection)
+                }
+
+            case WireMessage.penEventV1:
+                guard inputBuffer.count >= 6 else { return }
+                let packetSize: Int
+                do {
+                    packetSize = try PenProtocol.packetSize(fromPrefix: inputBuffer)
+                } catch {
+                    debugLog("Invalid Pen V1 header: \(error) — closing client")
+                    inputBuffer.removeAll(keepingCapacity: true)
+                    isReceiving = false
+                    connection.cancel()
+                    return
+                }
+                guard inputBuffer.count >= packetSize else { return }
+                let message = Data(inputBuffer.prefix(packetSize))
+                consumeInputBytes(packetSize)
+                guard penV1Acknowledged else {
+                    debugLog("Ignoring Pen V1 packet sent before capability ACK")
+                    continue
+                }
+                do {
+                    let packet = try PenProtocol.decode(message)
+                    guard isNewPenSequence(packet.sequence) else {
+                        debugLog("Ignoring stale Pen V1 sequence \(packet.sequence)")
+                        continue
+                    }
+                    if touchEnabled {
+                        DispatchQueue.main.async {
+                            self.onPenEvent?(packet)
+                        }
+                    }
+                } catch {
+                    debugLog("Invalid Pen V1 packet: \(error)")
+                }
+
             default:
                 debugLog("Unknown client input type: \(msgType)")
                 consumeInputBytes(1)
             }
         }
+    }
+
+    private func acknowledgePenV1(on connection: NWConnection) {
+        guard !penV1Acknowledged else { return }
+        penV1Acknowledged = true
+        connection.send(content: Data([WireMessage.penCapabilitiesV1]), completion: .contentProcessed { _ in })
+        debugLog("Acknowledged Pen V1 capability")
+    }
+
+    private func isNewPenSequence(_ sequence: UInt32) -> Bool {
+        defer { lastPenSequence = sequence }
+        guard let previous = lastPenSequence else { return true }
+        let delta = sequence &- previous
+        return delta != 0 && delta < 0x8000_0000
     }
 
     private func handleTouchMessage(_ data: Data, pointerCount: Int) {

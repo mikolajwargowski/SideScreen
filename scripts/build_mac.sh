@@ -4,6 +4,7 @@ set -e
 # Get absolute path to root directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/app_identity.sh"
 
 # Read version
 VERSION=$(cat "$ROOT_DIR/VERSION" | tr -d '[:space:]')
@@ -12,8 +13,8 @@ echo "Building version $VERSION..."
 cd "$ROOT_DIR/MacHost"
 
 # Kill running instance
-echo "Stopping running Side Screen..."
-pkill -f SideScreen 2>/dev/null || true
+echo "Stopping running $MAC_APP_PRODUCT_NAME..."
+pkill -x "$MAC_APP_EXECUTABLE" 2>/dev/null || true
 sleep 0.5
 
 # Clean old build
@@ -35,8 +36,7 @@ lipo -create \
   -output .build/release-universal/SideScreen
 
 # Create .app bundle
-APP_NAME="SideScreen"
-APP_DIR="$ROOT_DIR/$APP_NAME.app"
+APP_DIR="$ROOT_DIR/$MAC_APP_BUNDLE_NAME"
 
 echo "Creating app bundle..."
 rm -rf "$APP_DIR"
@@ -61,15 +61,15 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>SideScreen</string>
+    <string>$MAC_APP_EXECUTABLE</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>com.sidescreen.app</string>
+    <string>$MAC_APP_BUNDLE_ID</string>
     <key>CFBundleName</key>
-    <string>Side Screen</string>
+    <string>$MAC_APP_PRODUCT_NAME</string>
     <key>CFBundleDisplayName</key>
-    <string>Side Screen</string>
+    <string>$MAC_APP_PRODUCT_NAME</string>
     <key>CFBundleVersion</key>
     <string>$VERSION</string><!-- VERSION -->
     <key>CFBundleShortVersionString</key>
@@ -85,9 +85,9 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Side Screen needs screen recording access to capture your virtual display and stream it to your Android device.</string>
+    <string>SideScreen Flow needs screen recording access to capture your virtual display and stream it to your Android device.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Side Screen needs Local Network access so your Android tablet can connect to the Mac over WiFi for wireless mode. Without this, only USB-tethered connections work.</string>
+    <string>SideScreen Flow needs Local Network access so your Android tablet can connect to the Mac over WiFi for wireless mode. Without this, only USB-tethered connections work.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_sidescreen._tcp</string>
@@ -98,14 +98,18 @@ EOF
 
 # Ad-hoc code sign to prevent Gatekeeper "damaged" error
 echo "Code signing (ad-hoc)..."
-codesign --force --deep --sign - --entitlements "$ROOT_DIR/MacHost/SideScreen.entitlements" "$APP_DIR"
+codesign --force --deep --sign - \
+  --identifier "$MAC_APP_BUNDLE_ID" \
+  --requirements "=$MAC_APP_REQUIREMENT" \
+  --entitlements "$ROOT_DIR/MacHost/SideScreen.entitlements" \
+  "$APP_DIR"
 echo "  ✓ App signed"
 
 echo ""
 echo "Build successful!"
 echo ""
-echo "App: $ROOT_DIR/$APP_NAME.app"
-echo "To run: open $APP_NAME.app"
+echo "App: $APP_DIR"
+echo "To run: open '$MAC_APP_BUNDLE_NAME'"
 
 # Create DMG with Applications symlink
 echo ""
@@ -113,7 +117,7 @@ echo "Creating DMG..."
 DMG_DIR=$(mktemp -d)
 cp -R "$APP_DIR" "$DMG_DIR/"
 ln -s /Applications "$DMG_DIR/Applications"
-DMG_PATH="$ROOT_DIR/SideScreen-${VERSION}-mac-universal.dmg"
-hdiutil create -volname "Side Screen" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG_PATH"
+DMG_PATH="$ROOT_DIR/SideScreen-Flow-${VERSION}-mac-universal.dmg"
+hdiutil create -volname "$MAC_APP_PRODUCT_NAME" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG_PATH"
 rm -rf "$DMG_DIR"
 echo "DMG: $DMG_PATH"

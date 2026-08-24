@@ -43,6 +43,7 @@ struct GestureThresholds {
     static let scrollSensitivity: CGFloat = 1.2
     static let pinchMinDistance: CGFloat = 20
     static let minTouchInterval: UInt64 = 8_000_000    // ~120Hz
+    static let directTouchDecisionDelayMs = 170        // allow pinch / S Pen proximity to win
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -278,7 +279,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "Side Screen")
+            button.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "SideScreen Flow")
         }
 
         // Items are rebuilt on every open (menuNeedsUpdate) so the menu always
@@ -537,7 +538,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 height: size.height,
                 refreshRate: settings.refreshRate,
                 hiDPI: settings.hiDPI,
-                name: "SideScreen"
+                name: "SideScreen Flow"
             )
 
             // Disable mirror mode (may fail if already in extend mode)
@@ -598,12 +599,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             }
-            // Send the LOGICAL resolution that the user picked. The H.264 SPS in
-            // the stream still carries the true physical pixel dimensions, so the
-            // Android decoder/MediaCodec sets up correctly regardless. Sending the
-            // logical dimensions here makes the resolution overlay on Android
-            // match the Mac's resolution dropdown (e.g. "2560x1600" instead of
-            // the HiDPI-doubled "5120x3200").
+            // This provisional value is replaced during codec negotiation before a
+            // current client receives its display config. Legacy clients can still
+            // adapt from the codec SPS as they did before negotiation existed.
             streamingServer?.setDisplaySize(width: size.width, height: size.height, rotation: settings.rotation, flipHorizontal: settings.flipHorizontal, flipVertical: settings.flipVertical)
             streamingServer?.onClientConnected = { [weak self] in
                 guard let self = self else { return }
@@ -619,13 +617,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self = self, let capture = self.screenCapture else { return }
                 capture.negotiate(codec: codec, clientLimit: self.streamingServer?.clientDecodeLimits)
                 let enc = capture.encodeSize(for: codec)
-                // Unclamped HEVC keeps the logical user-picked resolution,
-                // exactly as at startup; any clamped size (client decoder
-                // limit, or the AVC floor) must match what the stream's SPS
-                // will carry so the client sizes its decoder correctly.
-                let unclampedHevc = codec == .hevc && enc == (capture.displayWidth, capture.displayHeight)
-                let (w, h) = unclampedHevc ? (size.width, size.height) : (enc.width, enc.height)
-                self.streamingServer?.setDisplaySize(width: w, height: h, rotation: self.settings.rotation, flipHorizontal: self.settings.flipHorizontal, flipVertical: self.settings.flipVertical)
+                // The decoder must be configured for the encoded/backing pixel size,
+                // not the logical macOS point size. In HiDPI mode the stream SPS is
+                // 2x (for example 2800x1752 for a 1400x876 logical desktop). Sending
+                // logical dimensions first forced MediaCodec to reconfigure after the
+                // first keyframe and can fail on Qualcomm output buffers.
+                self.streamingServer?.setDisplaySize(width: enc.width, height: enc.height, rotation: self.settings.rotation, flipHorizontal: self.settings.flipHorizontal, flipVertical: self.settings.flipVertical)
             }
             streamingServer?.onKeyframeRequested = { [weak self] force in
                 self?.screenCapture?.requestKeyframeOrReplayCachedFrame(force: force)
@@ -634,6 +631,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             streamingServer?.onClientDisconnected = { [weak self] in
                 guard let self = self else { return }
                 Task { @MainActor in
+                    self.penEventInjector.cancelActiveStroke()
+                    self.cancelDirectTouch()
                     self.settings.clientConnected = false
                     // Final lastConnected snapshot at the disconnect moment, then
                     // freeze (currentWirelessDevice = nil stops the rolling update
@@ -648,6 +647,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             streamingServer?.onTouchEvent = { [weak self] x, y, action, pointerCount, x2, y2 in
                 self?.handleTouch(x: x, y: y, action: action, pointerCount: pointerCount, x2: x2, y2: y2)
+            }
+            streamingServer?.onPenEvent = { [weak self] packet in
+                guard let self,
+                      let displayID = self.virtualDisplayManager?.displayID else { return }
+                self.cancelDirectTouch()
+                self.penEventInjector.handle(
+                    packet: packet,
+                    displayBounds: CGDisplayBounds(displayID),
+                    buttonAction: self.settings.penButtonAction
+                )
             }
 
             streamingServer?.onStats = { [weak self] fps, mbps in
@@ -688,6 +697,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func stopServer() {
+        penEventInjector.cancelActiveStroke()
+        cancelDirectTouch()
         // Save display position before destroying
         virtualDisplayManager?.saveDisplayPosition()
 
@@ -707,9 +718,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Gesture Properties
 
     private let eventSource = CGEventSource(stateID: .hidSystemState)
+    private let penEventInjector = PenEventInjector()
     private var accessibilityWarningShown = false
     private var gestureState: GestureState = .idle
     private var lastTouchTime: UInt64 = 0
+    private var directTouchDown = false
+    private var directTouchPending = false
+    private var directTouchStartPosition = CGPoint.zero
+    private var directTouchDelay: DispatchWorkItem?
+    private var suppressDirectTouchUntilRelease = false
 
     // Touch tracking
     private var touchStartPosition: CGPoint = .zero
@@ -765,10 +782,94 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         if pointerCount >= 2 {
+            cancelDirectTouch()
+            suppressDirectTouchUntilRelease = true
             handleTwoFingerTouch(p1: p1, p2: p2, action: action)
+        } else if settings.directTouchEnabled {
+            handleDirectTouch(at: p1, action: action)
         } else {
             handleOneFingerTouch(at: p1, action: action)
         }
+    }
+
+    // MARK: - Direct Touch
+
+    /// macOS has no public system-wide touchscreen injection API. SideScreen Flow's
+    /// direct mode therefore maps a finger contact to an absolute mouse press/drag/release.
+    /// This gives controls and canvases touchscreen-like behavior while preserving
+    /// two-finger scroll/pinch in the existing gesture state machine.
+    private func handleDirectTouch(at point: CGPoint, action: Int) {
+        if suppressDirectTouchUntilRelease {
+            if action == 2 {
+                suppressDirectTouchUntilRelease = false
+            } else {
+                moveCursor(to: point)
+            }
+            return
+        }
+
+        switch action {
+        case 0:
+            stopMomentumScroll()
+            cancelLongPressTimer()
+            touchLastPosition = point
+            directTouchStartPosition = point
+            directTouchPending = true
+
+            // Do not emit mouseDown immediately. A second finger or an approaching
+            // S Pen commonly arrives a few milliseconds later; emitting now leaves a
+            // dot in drawing apps before pinch/palm rejection can take over.
+            directTouchDelay?.cancel()
+            let delayedDown = DispatchWorkItem { [weak self] in
+                guard let self,
+                      self.directTouchPending,
+                      !self.suppressDirectTouchUntilRelease else { return }
+                self.directTouchPending = false
+                self.directTouchDown = true
+                self.injectMouseDown(at: self.directTouchStartPosition)
+                if self.touchLastPosition != self.directTouchStartPosition {
+                    self.injectMouseDragged(to: self.touchLastPosition)
+                }
+            }
+            directTouchDelay = delayedDown
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + .milliseconds(GestureThresholds.directTouchDecisionDelayMs),
+                execute: delayedDown
+            )
+        case 1:
+            touchLastPosition = point
+            if directTouchDown {
+                injectMouseDragged(to: point)
+            } else if !directTouchPending {
+                moveCursor(to: point)
+            }
+        case 2:
+            touchLastPosition = point
+            if directTouchDown {
+                injectMouseUp(at: point)
+            } else if directTouchPending {
+                // A normal tap completes before the ambiguity window expires.
+                // Emit its click on release, matching native button semantics.
+                directTouchDelay?.cancel()
+                injectMouseDown(at: directTouchStartPosition)
+                injectMouseUp(at: point)
+            }
+            directTouchPending = false
+            directTouchDown = false
+        default:
+            break
+        }
+    }
+
+    private func cancelDirectTouch() {
+        directTouchDelay?.cancel()
+        directTouchDelay = nil
+        directTouchPending = false
+        if directTouchDown {
+            injectMouseUp(at: touchLastPosition)
+        }
+        directTouchDown = false
+        suppressDirectTouchUntilRelease = false
     }
 
     // MARK: - 1-Finger Gesture State Machine
@@ -1170,6 +1271,6 @@ extension AppDelegate: NSMenuDelegate {
         menu.addItem(settingsItem)
 
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit Side Screen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit SideScreen Flow", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 }

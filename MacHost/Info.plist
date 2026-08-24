@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Side Screen</string>
+    <string>SideScreen Flow</string>
     <key>CFBundleIdentifier</key>
-    <string>com.sidescreen.app</string>
+    <string>com.mikolajwargowski.sidescreenflow</string>
     <key>CFBundleVersion</key>
     <string>0.7.0</string>
     <key>CFBundleShortVersionString</key>

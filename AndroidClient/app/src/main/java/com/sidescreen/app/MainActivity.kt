@@ -37,6 +37,7 @@ import com.google.android.material.slider.Slider
 import com.google.android.material.switchmaterial.SwitchMaterial
 import com.sidescreen.app.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -69,6 +70,9 @@ class MainActivity : AppCompatActivity() {
 
     // Input prediction for low-latency gaming
     private val inputPredictor = InputPredictor()
+    private var penInRange = false
+    private var penContact = false
+    private var penTimestampOriginMs = 0L
 
     // Checklist status handler
     private val checklistHandler = Handler(Looper.getMainLooper())
@@ -362,6 +366,10 @@ class MainActivity : AppCompatActivity() {
             handleTouch(view, event)
             true
         }
+        binding.surfaceView.setOnHoverListener { view, event -> handlePenHover(view, event) }
+        binding.textureView.setOnHoverListener { view, event -> handlePenHover(view, event) }
+        binding.surfaceView.setOnGenericMotionListener { view, event -> handlePenButton(view, event) }
+        binding.textureView.setOnGenericMotionListener { view, event -> handlePenButton(view, event) }
     }
 
     private fun setupUI() {
@@ -386,8 +394,17 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
+            // The readiness probe opens a short-lived socket because the server has no
+            // dedicated health endpoint. Stop it and let any in-flight read finish before
+            // opening the real stream; otherwise the single-client Mac server can briefly
+            // accept the probe and reject/reset this connection.
+            stopChecklistUpdates()
+            binding.connectButton.isEnabled = false
             updateStatus("Connecting...")
-            connect(host, port)
+            lifecycleScope.launch {
+                delay(300)
+                connect(host, port)
+            }
         }
 
         binding.disconnectButton.setOnClickListener {
@@ -1346,6 +1363,29 @@ class MainActivity : AppCompatActivity() {
         view: View,
         event: MotionEvent,
     ) {
+        val stylusIndex = event.findStylusPointerIndex()
+        if (stylusIndex >= 0 && streamClient?.penProtocolV1Negotiated == true) {
+            handlePenTouch(view, event, stylusIndex)
+            return
+        }
+        if (stylusIndex < 0 && penInRange) {
+            // Explicit app-level palm rejection while S Pen is in proximity.
+            return
+        }
+
+        if (event.actionMasked == MotionEvent.ACTION_DOWN ||
+            event.actionMasked == MotionEvent.ACTION_POINTER_DOWN
+        ) {
+            val contacts =
+                (0 until event.pointerCount).joinToString(separator = ";") { index ->
+                    "tool=${event.getToolType(index)},size=${"%.3f".format(event.getSize(index))}," +
+                        "major=${"%.1f".format(event.getTouchMajor(index))}," +
+                        "minor=${"%.1f".format(event.getTouchMinor(index))}," +
+                        "pressure=${"%.3f".format(event.getPressure(index))}"
+                }
+            mainDiag("Finger contact action=${event.actionMasked}, penInRange=$penInRange: $contacts")
+        }
+
         val rawX = event.x / view.width.toFloat()
         val rawY = event.y / view.height.toFloat()
         val x = if (displayFlipHorizontal) 1f - rawX else rawX
@@ -1397,6 +1437,159 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
+    private fun handlePenTouch(
+        view: View,
+        event: MotionEvent,
+        pointerIndex: Int,
+    ) {
+        val phase =
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (!penInRange) beginPenSession(event.eventTime)
+                    penInRange = true
+                    penContact = true
+                    PenPhase.DOWN
+                }
+                MotionEvent.ACTION_MOVE -> PenPhase.MOVE
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                    penContact = false
+                    PenPhase.UP
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    penContact = false
+                    penInRange = false
+                    PenPhase.CANCEL
+                }
+                else -> return
+            }
+        streamClient?.sendPenSamples(buildPenSamples(view, event, pointerIndex, phase))
+    }
+
+    private fun handlePenHover(
+        view: View,
+        event: MotionEvent,
+    ): Boolean {
+        val pointerIndex = event.findStylusPointerIndex()
+        if (pointerIndex < 0 || streamClient?.penProtocolV1Negotiated != true) return false
+        val phase =
+            when (event.actionMasked) {
+                MotionEvent.ACTION_HOVER_ENTER -> {
+                    beginPenSession(event.eventTime)
+                    penInRange = true
+                    PenPhase.PROXIMITY_ENTER
+                }
+                MotionEvent.ACTION_HOVER_MOVE -> {
+                    penInRange = true
+                    PenPhase.HOVER
+                }
+                MotionEvent.ACTION_HOVER_EXIT -> {
+                    penInRange = false
+                    penContact = false
+                    PenPhase.PROXIMITY_EXIT
+                }
+                else -> return false
+            }
+        streamClient?.sendPenSamples(buildPenSamples(view, event, pointerIndex, phase))
+        return true
+    }
+
+    private fun handlePenButton(
+        view: View,
+        event: MotionEvent,
+    ): Boolean {
+        if (event.actionMasked != MotionEvent.ACTION_BUTTON_PRESS &&
+            event.actionMasked != MotionEvent.ACTION_BUTTON_RELEASE
+        ) return false
+        val pointerIndex = event.findStylusPointerIndex()
+        if (pointerIndex < 0 || streamClient?.penProtocolV1Negotiated != true) return false
+        val phase = if (penContact) PenPhase.MOVE else PenPhase.HOVER
+        streamClient?.sendPenSamples(buildPenSamples(view, event, pointerIndex, phase, includeHistory = false))
+        return true
+    }
+
+    private fun buildPenSamples(
+        view: View,
+        event: MotionEvent,
+        pointerIndex: Int,
+        phase: PenPhase,
+        includeHistory: Boolean = phase == PenPhase.MOVE || phase == PenPhase.HOVER,
+    ): List<PenSample> {
+        val samples = ArrayList<PenSample>(PenProtocol.MAX_SAMPLES)
+        if (includeHistory) {
+            val first = (event.historySize - (PenProtocol.MAX_SAMPLES - 1)).coerceAtLeast(0)
+            for (historyIndex in first until event.historySize) {
+                samples += makePenSample(view, event, pointerIndex, phase, historyIndex)
+            }
+        }
+        samples += makePenSample(view, event, pointerIndex, phase, null)
+        return samples
+    }
+
+    private fun makePenSample(
+        view: View,
+        event: MotionEvent,
+        pointerIndex: Int,
+        phase: PenPhase,
+        historyIndex: Int?,
+    ): PenSample {
+        val rawX =
+            if (historyIndex == null) event.getX(pointerIndex)
+            else event.getHistoricalX(pointerIndex, historyIndex)
+        val rawY =
+            if (historyIndex == null) event.getY(pointerIndex)
+            else event.getHistoricalY(pointerIndex, historyIndex)
+        val x0 = (rawX / view.width.toFloat()).coerceIn(0f, 1f)
+        val y0 = (rawY / view.height.toFloat()).coerceIn(0f, 1f)
+        val pressure =
+            (if (historyIndex == null) event.getPressure(pointerIndex)
+            else event.getHistoricalPressure(pointerIndex, historyIndex)).coerceIn(0f, 1f)
+        val tilt = event.axisValue(MotionEvent.AXIS_TILT, pointerIndex, historyIndex)
+        val orientation = event.axisValue(MotionEvent.AXIS_ORIENTATION, pointerIndex, historyIndex)
+        val distance = event.axisValue(MotionEvent.AXIS_DISTANCE, pointerIndex, historyIndex)
+        val eventTime =
+            if (historyIndex == null) event.eventTime
+            else event.getHistoricalEventTime(historyIndex)
+        val timestampUs = ((eventTime - penTimestampOriginMs).coerceAtLeast(0L) * 1_000L) and 0xFFFF_FFFFL
+        val tool =
+            if (event.getToolType(pointerIndex) == MotionEvent.TOOL_TYPE_ERASER) PenTool.ERASER
+            else PenTool.STYLUS
+
+        return PenSample(
+            timestampDeltaUs = timestampUs,
+            pointerId = event.getPointerId(pointerIndex),
+            phase = phase,
+            tool = tool,
+            sampleFlags = 0,
+            buttons = event.buttonState.toLong() and 0xFFFF_FFFFL,
+            x = if (displayFlipHorizontal) 1f - x0 else x0,
+            y = if (displayFlipVertical) 1f - y0 else y0,
+            pressure = pressure,
+            tiltRadians = tilt,
+            orientationRadians = orientation,
+            distance = distance,
+        )
+    }
+
+    private fun beginPenSession(eventTimeMs: Long) {
+        penTimestampOriginMs = eventTimeMs
+    }
+
+    private fun MotionEvent.findStylusPointerIndex(): Int {
+        for (index in 0 until pointerCount) {
+            val type = getToolType(index)
+            if (type == MotionEvent.TOOL_TYPE_STYLUS || type == MotionEvent.TOOL_TYPE_ERASER) return index
+        }
+        return -1
+    }
+
+    private fun MotionEvent.axisValue(
+        axis: Int,
+        pointerIndex: Int,
+        historyIndex: Int?,
+    ): Float =
+        if (historyIndex == null) getAxisValue(axis, pointerIndex)
+        else getHistoricalAxisValue(axis, pointerIndex, historyIndex)
 
     private fun applyRotation(
         rotation: Int,

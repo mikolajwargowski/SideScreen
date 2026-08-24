@@ -77,6 +77,12 @@ Hardware-accelerated H.265 encoding on Mac and decoding on Android. Async pipeli
 
 Use your tablet's touchscreen to interact with macOS. Touch prediction compensates for network latency, making taps and drags feel natural.
 
+### SideScreen Flow Pen MVP
+
+The development branch adds S Pen pressure, directional tilt, hover/proximity, app-level palm rejection and direct-touch gestures. Holding the S Pen side button temporarily maps to middle-button canvas pan; releasing it restores normal drawing.
+
+Use the included [Pen Probe](Tools/PenProbe/README.md) to validate pressure, all four tilt directions and the hold-to-pan interaction end to end.
+
 ### HiDPI (Retina) Support
 
 Enable HiDPI mode to render at 2× resolution internally — text and icons are sharp at any logical resolution, just like a MacBook Retina display. Perfect for users with 2K/4K tablets who want a readable workspace without sacrificing sharpness.
